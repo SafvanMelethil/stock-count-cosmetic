@@ -1,0 +1,2 @@
+{ "name": "Stock Count Cosmetic", "short_name": "Cosmetic Count", "start_url": "./", "display": "standalone", "background_color": "#16213a", "theme_color": "#16213a",
+  "icons": [{ "src": "icon.svg", "sizes": "any", "type": "image/svg+xml" }] }
