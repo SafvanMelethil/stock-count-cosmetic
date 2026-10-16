@@ -8,7 +8,7 @@ window.Admin = (() => {
   const linesArr = () => [...D.lines.values()];
 
   async function sync(full) {
-    const r = await api('snapshot', { sinceRow: full || !D.loaded ? 0 : D.scansRow }, { timeout: 90000 });
+    const r = await api('snapshot', { sinceRow: full || !D.loaded ? 0 : D.scansRow, linesVer: D.linesVer }, { timeout: 90000 });
     if (r.full) { D.lines = new Map(); D.seenEv = new Set(); for (const l of r.lines) D.lines.set(l.key, { ...l, lineId: l.key }); }
     // newer scans are added on this screen (each scan exactly once)
     for (const e of r.events) {
@@ -18,7 +18,7 @@ window.Admin = (() => {
       if (!l) { l = { key: e.key, lineId: e.key, taskId: e.taskId, username: e.username, display: e.display, wh: e.wh, zone: e.zone, taskNo: e.taskNo, material: e.material, description: e.description, barcode: e.barcode, bin: e.bin, qty: 0, createdAt: e.at, updatedAt: e.at, updatedBy: e.by }; D.lines.set(e.key, l); }
       l.qty = Math.round((Number(l.qty) + Number(e.qty)) * 1000) / 1000; l.updatedAt = e.at; l.updatedBy = e.by;
     }
-    D.scansRow = r.scansRow;
+    D.scansRow = r.scansRow; if (r.linesVer) D.linesVer = r.linesVer;
     Object.assign(D, { warehouses: r.warehouses, users: r.users, tasks: r.tasks, rev: r.rev, sheetUrl: r.sheetUrl, loaded: true });
     if (r.masterRev !== Master.rev) await Master.load(true);
     if (r.sapRev !== D.sapRev) { const s = await api('sap'); D.sapRows = s.rows; D.sapRev = s.sapRev; }
@@ -31,7 +31,7 @@ window.Admin = (() => {
     S.syncing = true;
     try {
       const r = await api('rev');
-      if (r.rev !== D.rev || r.scansRow !== D.scansRow || r.masterRev !== Master.rev || r.sapRev !== D.sapRev) { await sync(); rerender(); }
+      if (r.rev !== D.rev || r.scansRow !== D.scansRow || (r.linesVer && r.linesVer !== D.linesVer) || r.masterRev !== Master.rev || r.sapRev !== D.sapRev) { await sync(); rerender(); }
       else setLive(true);
     } catch (e) { setLive(false); } finally { S.syncing = false; }
   }
