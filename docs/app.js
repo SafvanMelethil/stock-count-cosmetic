@@ -613,13 +613,13 @@ const Scanner = {
     const list = $('[data-list]');
     if (!list || !this.task) return;
     const pend = this.outbox.filter((o) => o.taskId === this.task.taskId);
-    const lines = this.decorated().sort((a, b) => (b.updatedAt || '').localeCompare(a.updatedAt || '') || String(b.lineId).localeCompare(String(a.lineId)));
+    const lines = this.decorated().sort((a, b) => (b.updatedAt || '').localeCompare(a.updatedAt || '') || String(b.key || b.lineId).localeCompare(String(a.key || a.lineId)));
     const f = this.filter.trim().toLowerCase();
     const match = (l) => !f || [l.description, l.material, l.barcode].some((x) => String(x || '').toLowerCase().includes(f));
     const pendHtml = pend.filter((o) => match({ description: o.desc, material: o.material, barcode: o.code })).slice().reverse().map((o) => `<div class="item pending">
         <div class="grow"><div class="desc">${esc(o.desc)}</div><div class="meta"><span class="mono">${esc(o.material || o.code)}</span><span class="badge grey">Saving…</span></div></div>
         <div class="qty"><b>+${fmtQty(o.qty)}</b><span>Qty</span></div></div>`).join('');
-    const rows = lines.filter(match).map((l) => `<div class="item ${locClass(l.loc)} ${this.flashId === l.lineId ? 'flash' : ''}" data-line="${esc(l.lineId)}">
+    const rows = lines.filter(match).map((l) => `<div class="item ${locClass(l.loc)} ${this.flashId === (l.key || l.lineId) ? 'flash' : ''}" data-line="${esc(l.key || l.lineId)}">
         <div class="grow"><div class="desc">${esc(l.description)}</div>
           <div class="meta"><span class="mono">${esc(l.material || '—')}</span><span class="mono">${esc(l.barcode || '')}</span>${l.bin ? `<span>Bin ${esc(l.bin)}</span>` : ''}</div>
           <div class="meta">${locBadge(l.loc, true)}${l.loc.code !== 'OK' && l.loc.correct ? `<span>Should be: <b>${esc(l.loc.correct)}</b></span>` : ''}</div></div>
@@ -659,10 +659,12 @@ const Scanner = {
       <div style="display:grid;gap:8px">
         <button class="btn lg block" data-pin>${I.key} Change PIN</button>
         <button class="btn lg block" data-reload>${I.refresh} Refresh data</button>
+        <button class="btn lg block" data-backup>${I.download} Backup unsaved scans (${this.outbox.length})</button>
         <button class="btn lg block danger-ghost" data-out>${I.logout} Log out</button>
       </div><div class="actions"><button class="btn lg" data-c>Close</button></div>`);
     $('[data-c]', m.el).onclick = () => m.close();
     $('[data-pin]', m.el).onclick = () => { m.close(); changePinDialog(false); };
+    $('[data-backup]', m.el).onclick = () => { m.close(); this.downloadBackup(); };
     $('[data-reload]', m.el).onclick = async () => { m.close(); try { await Master.load(true); await this.refresh(); toast('Data refreshed.', 'ok'); } catch (e) { toast(e.message, 'bad'); } };
     $('[data-out]', m.el).onclick = async () => {
       m.close();
@@ -741,7 +743,8 @@ const Scanner = {
         const batch = this.outbox.slice(0, 25);
         let r;
         try {
-          r = await api('scanBatch', { scans: batch.map((o) => ({ clientId: o.clientId, taskId: o.taskId, material: o.material, code: o.code, qty: o.qty, bin: o.bin, unknownDesc: o.unknownDesc })) });
+          r = await api('scanBatch', { scans: batch.map((o) => ({ clientId: o.clientId, taskId: o.taskId, material: o.material, code: o.code, qty: o.qty, bin: o.bin, unknownDesc: o.unknownDesc,
+            description: o.material ? o.desc : undefined, barcode: o.material ? o.code : undefined })) }, { timeout: 60000 });
         } catch (e) {
           if (e.code === 0) this.online = false;
           break; // keep everything queued; retried automatically
@@ -752,7 +755,8 @@ const Scanner = {
         for (const o of batch) {
           const res = byId.get(o.clientId);
           if (!res) continue;
-          if (res.status === 'ok' || res.status === 'dup') { this.remove(o); if (res.lineId) this.flashId = res.lineId; }
+          if (res.status === 'ok') { this.remove(o); this.applyLocal(res); this.flashId = res.key; }
+          else if (res.status === 'dup') { this.remove(o); needRefresh = true; } // already saved earlier – reload the list to be exact
           else if (res.status === 'closed') closed++;
           else { // notfound / invalid → keep a record, tell the user
             this.remove(o); this.failed.push({ ...o, error: res.error, failedAt: Date.now() }); store.set(this.key('failed'), this.failed.slice(-200));
@@ -767,22 +771,38 @@ const Scanner = {
       }
     } finally { this.flushing = false; this.renderListOnly(); this.renderSync(); }
   },
+  /** Saves every scan still waiting on this phone (plus any rejected ones) as a CSV file – nothing can be lost. */
+  downloadBackup() {
+    const rows = [['Status', 'User', 'TaskId', 'Material', 'Description', 'Barcode', 'Bin', 'Qty', 'ScannedAt', 'ClientId', 'Error']];
+    const add = (st, o) => rows.push([st, App.user.username, o.taskId, o.material || '', o.desc || '', o.code || '', o.bin || '', o.qty, new Date(o.at || Date.now()).toLocaleString(), o.clientId, o.error || '']);
+    this.outbox.forEach((o) => add('WAITING TO SAVE', o));
+    this.failed.forEach((o) => add('REJECTED', o));
+    const csv = rows.map((r) => r.map((v) => '"' + String(v == null ? '' : v).replace(/"/g, '""') + '"').join(',')).join('\r\n');
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob(['\ufeff' + csv], { type: 'text/csv' }));
+    a.download = `unsaved-scans_${App.user.username}_${new Date().toISOString().slice(0, 16).replace(/[:T]/g, '-')}.csv`;
+    document.body.appendChild(a); a.click(); a.remove();
+    toast(`${this.outbox.length} waiting + ${this.failed.length} rejected scan(s) saved to a file.`, 'ok', 4000);
+  },
   remove(o) { const i = this.outbox.findIndex((x) => x.clientId === o.clientId); if (i >= 0) this.outbox.splice(i, 1); },
-  /** Server returns only the lines that changed; merge them in. A gap in revisions means something else changed → full refresh. */
+  /** A saved scan / correction → add it to the list on this phone straight away. */
+  applyLocal(ev) {
+    if (!this.task || ev.taskId !== this.task.taskId) return;
+    let l = this.lines.find((x) => (x.key || x.lineId) === ev.key);
+    if (!l) { l = { key: ev.key, lineId: ev.key, taskId: ev.taskId, material: ev.material, description: ev.description, barcode: ev.barcode, bin: ev.bin, qty: 0, createdAt: ev.at }; this.lines.push(l); }
+    l.qty = Math.round((Number(l.qty) + Number(ev.qty)) * 1000) / 1000;
+    l.updatedAt = ev.at;
+  },
+  /** A gap in this user's revision means something else (admin / other phone) changed the task → full refresh. */
   mergeLines(r) {
-    for (const l of r.lines || []) {
-      if (!this.task || l.taskId !== this.task.taskId) continue;
-      const i = this.lines.findIndex((x) => x.lineId === l.lineId);
-      if (i >= 0) this.lines[i] = l; else this.lines.push(l);
-    }
     this.lines = this.lines.filter((l) => l.qty > 0);
-    const gap = r.myRevBefore !== undefined && this.myRev !== -1 && r.myRevBefore !== this.myRev;
-    if (r.myRev !== undefined) this.myRev = r.myRev;
+    const gap = r.myRevBefore != null && this.myRev !== -1 && r.myRevBefore !== this.myRev;
+    if (r.myRev != null) this.myRev = r.myRev;
     this.saveState();
     return gap;
   },
   async editLine(id) {
-    const l = this.decorated().find((x) => x.lineId === id);
+    const l = this.decorated().find((x) => (x.key || x.lineId) === id);
     if (!l) return;
     const m = Modal.open(`
       <div class="sheet-head"><h2>Edit item</h2><button class="btn icon ghost" data-x aria-label="Close">${I.x}</button></div>
@@ -808,14 +828,22 @@ const Scanner = {
       if (!(q > 0)) { err.textContent = 'Quantity must be greater than 0. Use Delete to remove the item.'; return; }
       if (/^\d{7,}$/.test(String(qi.value).trim())) { err.textContent = 'That looks like a barcode, not a quantity.'; return; }
       btn.disabled = true;
-      try { const r = await api('editLine', { lineId: id, expectedQty: l.qty, qty: q, bin: $('[data-bin]', m.el).value }); if (this.mergeLines(r)) this.refresh(); m.close(); this.flashId = id; this.renderListOnly(); toast('Saved.', 'ok'); }
+      try {
+        const r = await api('editLine', { taskId: l.taskId, key: l.key, lineId: l.key ? undefined : l.lineId, expectedQty: l.qty, qty: q, bin: $('[data-bin]', m.el).value, material: l.material, description: l.description, barcode: l.barcode });
+        (r.results || []).forEach((x) => { if (x.status === 'ok') this.applyLocal(x); });
+        if (this.mergeLines(r) || !l.key) this.refresh(); m.close(); this.flashId = id; this.renderListOnly(); toast('Saved.', 'ok');
+      }
       catch (e) { btn.disabled = false; handle(e); }
     };
     $('[data-save]', m.el).onclick = (e) => save(e.currentTarget);
     m.el.addEventListener('keydown', (e) => { if (e.key === 'Enter' && e.target.tagName === 'INPUT') { e.preventDefault(); save($('[data-save]', m.el)); } });
     $('[data-del]', m.el).onclick = async () => {
       if (!(await confirmDialog({ title: 'Delete this item?', text: esc(l.description) + ' – qty ' + fmtQty(l.qty), yes: 'Delete', no: 'Keep', danger: true }))) return;
-      try { const r = await api('editLine', { lineId: id, expectedQty: l.qty, delete: true }); if (this.mergeLines(r)) this.refresh(); m.close(); this.renderListOnly(); toast('Item deleted.', 'ok'); }
+      try {
+        const r = await api('editLine', { taskId: l.taskId, key: l.key, lineId: l.key ? undefined : l.lineId, expectedQty: l.qty, delete: true, material: l.material, description: l.description, barcode: l.barcode });
+        (r.results || []).forEach((x) => { if (x.status === 'ok') this.applyLocal(x); });
+        if (this.mergeLines(r) || !l.key) this.refresh(); m.close(); this.renderListOnly(); toast('Item deleted.', 'ok');
+      }
       catch (e) { handle(e); }
     };
   },

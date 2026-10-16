@@ -4,15 +4,22 @@
 window.Admin = (() => {
   const S = { tab: 'dash', wh: null, active: false, timer: null, masterWh: null, sapWh: null, sapFilter: 'all', sapQ: '', sapOpen: true, detail: null, syncing: false, lastSync: null };
   // ---------------- live data ----------------
-  const D = { warehouses: [], users: [], tasks: [], lines: new Map(), maxSeq: 0, rev: -1, sapRev: -1, sapRows: [], sheetUrl: '', loaded: false };
+  const D = { warehouses: [], users: [], tasks: [], lines: new Map(), seenEv: new Set(), scansRow: 0, rev: -1, sapRev: -1, sapRows: [], sheetUrl: '', loaded: false };
   const linesArr = () => [...D.lines.values()];
 
   async function sync(full) {
-    const r = await api('snapshot', { sinceSeq: full || !D.loaded ? 0 : D.maxSeq });
-    if (r.full) D.lines = new Map();
-    for (const l of r.lines) D.lines.set(l.lineId, l);
+    const r = await api('snapshot', { sinceRow: full || !D.loaded ? 0 : D.scansRow }, { timeout: 90000 });
+    if (r.full) { D.lines = new Map(); D.seenEv = new Set(); for (const l of r.lines) D.lines.set(l.key, { ...l, lineId: l.key }); }
+    // newer scans are added on this screen (each scan exactly once)
+    for (const e of r.events) {
+      if (D.seenEv.has(e.clientId)) continue;
+      D.seenEv.add(e.clientId);
+      let l = D.lines.get(e.key);
+      if (!l) { l = { key: e.key, lineId: e.key, taskId: e.taskId, username: e.username, display: e.display, wh: e.wh, zone: e.zone, taskNo: e.taskNo, material: e.material, description: e.description, barcode: e.barcode, bin: e.bin, qty: 0, createdAt: e.at, updatedAt: e.at, updatedBy: e.by }; D.lines.set(e.key, l); }
+      l.qty = Math.round((Number(l.qty) + Number(e.qty)) * 1000) / 1000; l.updatedAt = e.at; l.updatedBy = e.by;
+    }
+    D.scansRow = r.scansRow;
     Object.assign(D, { warehouses: r.warehouses, users: r.users, tasks: r.tasks, rev: r.rev, sheetUrl: r.sheetUrl, loaded: true });
-    D.maxSeq = r.nextSince !== undefined ? r.nextSince : (r.full ? r.maxSeq : Math.max(D.maxSeq, r.maxSeq));
     if (r.masterRev !== Master.rev) await Master.load(true);
     if (r.sapRev !== D.sapRev) { const s = await api('sap'); D.sapRows = s.rows; D.sapRev = s.sapRev; }
     Report.setData({ warehouses: D.warehouses, users: D.users, tasks: D.tasks, lines: linesArr(), sapRows: D.sapRows });
@@ -24,7 +31,7 @@ window.Admin = (() => {
     S.syncing = true;
     try {
       const r = await api('rev');
-      if (r.rev !== D.rev || r.masterRev !== Master.rev || r.sapRev !== D.sapRev) { await sync(); rerender(); }
+      if (r.rev !== D.rev || r.scansRow !== D.scansRow || r.masterRev !== Master.rev || r.sapRev !== D.sapRev) { await sync(); rerender(); }
       else setLive(true);
     } catch (e) { setLive(false); } finally { S.syncing = false; }
   }
@@ -67,7 +74,7 @@ window.Admin = (() => {
     const sl = $('[data-sheet]'); if (sl && D.sheetUrl) sl.href = D.sheetUrl;
     page();
     clearInterval(S.timer);
-    S.timer = setInterval(poll, 3000);
+    S.timer = setInterval(poll, 5000);
     if (!S._wired) { S._wired = true; document.addEventListener('visibilitychange', () => { if (S.active && document.visibilityState === 'visible') poll(); }); }
   }
   function stop() { S.active = false; clearInterval(S.timer); }
@@ -280,13 +287,13 @@ window.Admin = (() => {
         const save = () => {
           const qty = Number(String(q.value).replace(',', '.'));
           if (!(qty > 0)) return toast('Quantity must be greater than 0 (use delete to remove).', 'bad');
-          act(() => api('adminEdit', { lineId: id, expectedQty: l.qty, qty, bin: b.value }), 'Saved.');
+          act(() => api('adminEdit', { taskId: l.taskId, key: l.key, expectedQty: l.qty, qty, bin: b.value, material: l.material, description: l.description, barcode: l.barcode }), 'Saved.');
         };
         sv.onclick = save;
         [q, b].forEach((el) => el.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); save(); } }));
         $('[data-del]', row).onclick = async () => {
           if (!(await confirmDialog({ title: 'Delete this line?', text: `${esc(l.description)} – qty ${fmtQty(l.qty)}`, yes: 'Delete', no: 'Cancel', danger: true }))) return;
-          act(() => api('adminEdit', { lineId: id, expectedQty: l.qty, delete: true }), 'Line deleted.');
+          act(() => api('adminEdit', { taskId: l.taskId, key: l.key, expectedQty: l.qty, delete: true, material: l.material, description: l.description, barcode: l.barcode }), 'Line deleted.');
         };
       });
     }

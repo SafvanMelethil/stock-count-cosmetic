@@ -1,6 +1,6 @@
 // Offline app shell: the app opens even without connection; scans wait in the device queue.
-const CACHE = 'stockcount-v3' + self.registration.scope;
-const SHELL = ['./', 'index.html', 'app.css?v=2', 'config.js?v=2', 'app.js?v=2', 'excel.js?v=2', 'admin.js?v=2', 'vendor/html5-qrcode.min.js', 'vendor/exceljs.min.js', 'manifest.json', 'icon.svg'];
+const CACHE = 'stockcount-v4' + self.registration.scope;
+const SHELL = ['./', 'index.html', 'app.css?v=3', 'config.js?v=3', 'app.js?v=3', 'excel.js?v=3', 'admin.js?v=3', 'vendor/html5-qrcode.min.js', 'vendor/exceljs.min.js', 'manifest.json', 'icon.svg'];
 self.addEventListener('install', (e) => { e.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL)).then(() => self.skipWaiting())); });
 self.addEventListener('activate', (e) => { e.waitUntil(caches.keys().then((ks) => Promise.all(ks.filter((k) => k !== CACHE && k.indexOf(self.registration.scope) >= 0 || k === 'stockcount-v2').map((k) => caches.delete(k)))).then(() => self.clients.claim())); });
 self.addEventListener('fetch', (e) => {
