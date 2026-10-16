@@ -75,9 +75,17 @@ async function api(action, data = {}, opts = {}) {
   let res, json;
   const ctl = new AbortController();
   const timer = setTimeout(() => ctl.abort(), opts.timeout || 45000);
+  const body = JSON.stringify({ ...data, action, token: App.token || undefined });
   try {
-    res = await fetch(API_URL, { method: 'POST', body: JSON.stringify({ ...data, action, token: App.token || undefined }), redirect: 'follow', signal: ctl.signal, cache: 'no-store' });
-    json = await res.json();
+    res = await fetch(API_URL, { method: 'POST', body, redirect: 'follow', signal: ctl.signal, cache: 'no-store' });
+    json = await res.json().catch(() => null);
+    // the POST arrived as a plain GET (browser/Google account redirect) or got a non-JSON page → send the same request as GET
+    if ((!json || (json.app === 'stock-count' && !('results' in json) && json.message)) && body.length < 7000) {
+      const sep = API_URL.indexOf('?') >= 0 ? '&' : '?';
+      res = await fetch(API_URL + sep + 'p=' + encodeURIComponent(body), { method: 'GET', redirect: 'follow', signal: ctl.signal, cache: 'no-store' });
+      json = await res.json();
+    }
+    if (!json) throw new Error('no json');
   } catch (e) { throw new ApiError(0, 'No connection to the server. Check the network – your scans are kept on this device.'); }
   finally { clearTimeout(timer); }
   if (!json || json.ok !== true) {
